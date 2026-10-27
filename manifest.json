@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "appId": "workbench.9f36777b-9b2f-4bfa-be69-7876b1f4ebaa",
+  "name": "QMReader 工作台",
+  "version": "0.1.0",
+  "sdkVersion": "1.0.0",
+  "runtime": "node22-sqlite-v1",
+  "build": {
+    "profile": "typescript-react-v1",
+    "server": "src/server/index.ts",
+    "ui": "index.html"
+  },
+  "server": "dist/server/index.mjs",
+  "ui": "dist/ui",
+  "migrations": "migrations",
+  "capabilities": [],
+  "contributions": [],
+  "dependencies": [],
+  "resources": []
+}

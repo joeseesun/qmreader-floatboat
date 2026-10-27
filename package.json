@@ -1,0 +1,27 @@
+{
+  "name": "qmreader-floatboat",
+  "private": true,
+  "version": "0.1.0",
+  "description": "乔木 RSS 阅读工作台：在 Floatboat 中阅读乔木精选、改写与翻译，并用原生对话伴读",
+  "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joeseesun/qmreader-floatboat.git"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "node --enable-source-maps dist/server/index.mjs",
+    "test": "node --test tests/*.test.ts"
+  },
+  "engines": { "node": ">=22.16.0" },
+  "dependencies": {
+    "lucide-react": "0.562.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.2",
+    "@types/react": "19.2.8",
+    "@types/react-dom": "19.2.3"
+  }
+}

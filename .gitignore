@@ -1,0 +1,10 @@
+# Floatboat 工作台运行时，由宿主在本机提供，不随源码分发
+sdk/
+
+node_modules/
+dist/
+.workbench/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.DS_Store
