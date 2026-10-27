@@ -56,6 +56,16 @@ function formatFullDate(value: string | number | null | undefined): string {
   return date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
 }
 
+/** 每点一次就是一轮独立提问，用于 Host 侧幂等键。 */
+function newRequestId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function shortTitle(title: string, max = 16): string {
+  return title.length > max ? `${title.slice(0, max)}…` : title;
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -82,6 +92,7 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [entryBundle, setEntryBundle] = useState<EntryBundle | null>(null);
   const [loadingArticle, setLoadingArticle] = useState<boolean>(false);
+  const [dispatching, setDispatching] = useState<boolean>(false);
 
   const [activeVersion, setActiveVersion] = useState<Version>('rewrite');
   const [passage, setPassage] = useState<SelectedPassage | null>(null);
@@ -136,6 +147,25 @@ export function App() {
     }
   };
 
+  /**
+   * 把「正在读」写进工作台 SQLite 并落一份 Markdown 快照。
+   * 之后在任何 Floatboat 对话里问「总结这篇文章」，都能读到当前正文。
+   */
+  const syncReadingContext = (id: string, version: Version) => {
+    void (async () => {
+      try {
+        const page = await pageConnection;
+        await page.fetch('/api/v1/reading-context', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ entryId: id, version }),
+        });
+      } catch (err) {
+        console.error('Failed to sync reading context', err);
+      }
+    })();
+  };
+
   const openArticle = async (id: string) => {
     setSelectedId(id);
     setLoadingArticle(true);
@@ -154,10 +184,12 @@ export function App() {
           translation: Boolean(data.bundle.translation?.content?.length),
           original: true,
         };
-        if (has[preferred]) setActiveVersion(preferred);
-        else if (has.rewrite) setActiveVersion('rewrite');
-        else if (has.translation) setActiveVersion('translation');
-        else setActiveVersion('original');
+        let resolved: Version = 'original';
+        if (has[preferred]) resolved = preferred;
+        else if (has.rewrite) resolved = 'rewrite';
+        else if (has.translation) resolved = 'translation';
+        setActiveVersion(resolved);
+        syncReadingContext(id, resolved);
 
         if (!data.bundle.entry.isRead) {
           void page.fetch(`/api/v1/entries/${encodeURIComponent(id)}/state`, {
@@ -286,30 +318,71 @@ export function App() {
     setPassage(sel);
   };
 
-  const askFloatboat = async () => {
-    if (!entryBundle) return;
-    const title = entryBundle.entry.titleZh || entryBundle.entry.title;
-    const quote = passage?.quote?.trim() || '';
+  const companionPrompt = (quote: string) =>
+    quote
+      ? '请结合整篇文章的上下文，深入剖析这段话在讲什么、为什么重要。'
+      : '请先一句话说清这篇文章在讲什么，再分点总结核心信息、关键数据和值得注意的细节。';
 
-    const page = await pageConnection;
-    const res = await page.fetch('/api/v1/companion/prefill', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title,
-        version: activeVersion,
-        selection: quote,
-        prompt: quote ? '请结合上下文深度剖析该选段：' : '请帮我梳理这篇文章的核心洞见与底层逻辑：',
-      }),
-    });
-    const data = await res.json() as { ok: boolean; prefilledText?: string };
-    if (data?.prefilledText) {
-      try {
-        await navigator.clipboard.writeText(data.prefilledText);
-        showToast(quote ? '已复制选段伴读指令，粘贴到对话即可' : '已复制文章伴读指令，粘贴到对话即可');
-      } catch {
-        showToast('已准备伴读上下文，直接在对话中提问即可');
-      }
+  /** 兜底路径：把带正文的伴读指令复制到剪贴板，用户自己粘进对话。 */
+  const copyCompanionPrompt = async () => {
+    if (!entryBundle) return;
+    const quote = passage?.quote?.trim() || '';
+    try {
+      const page = await pageConnection;
+      const res = await page.fetch('/api/v1/companion/prefill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entryId: entryBundle.entry.id,
+          version: activeVersion,
+          selection: quote,
+          prompt: companionPrompt(quote),
+        }),
+      });
+      const data = (await res.json()) as { ok: boolean; prefilledText?: string };
+      if (!data?.prefilledText) throw new Error('prefill failed');
+      await navigator.clipboard.writeText(data.prefilledText);
+      showToast(quote ? '已复制选段伴读指令（含正文）' : '已复制文章伴读指令（含正文），粘贴到对话即可');
+    } catch (err) {
+      console.error('Copy companion prompt failed', err);
+      showToast('复制失败，可手动选中正文后提问');
+    }
+  };
+
+  /**
+   * 主路径：把「当前文章正文 + 提问」直接发进 Floatboat 原生对话。
+   * 失败时才退回复制，保证按钮永远有反馈。
+   */
+  const askFloatboat = async () => {
+    if (!entryBundle || dispatching) return;
+    const quote = passage?.quote?.trim() || '';
+    setDispatching(true);
+    try {
+      const page = await pageConnection;
+      const res = await page.fetch('/api/v1/companion/dispatch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entryId: entryBundle.entry.id,
+          version: activeVersion,
+          selection: quote,
+          prompt: companionPrompt(quote),
+          requestId: newRequestId(),
+        }),
+      });
+      const data = (await res.json()) as { ok: boolean; conversationTitle?: string; error?: string };
+      if (!data?.ok) throw new Error(data?.error || 'dispatch failed');
+      const target = data.conversationTitle || 'Floatboat 对话';
+      showToast(
+        quote
+          ? `已把选段发进「${target}」`
+          : `已把《${shortTitle(entryBundle.entry.titleZh || entryBundle.entry.title)}》发进「${target}」`,
+      );
+    } catch (err) {
+      console.error('Dispatch to Floatboat failed', err);
+      await copyCompanionPrompt();
+    } finally {
+      setDispatching(false);
     }
   };
 
@@ -652,6 +725,7 @@ export function App() {
                       onClick={() => {
                         setPassage(null);
                         setActiveVersion(v);
+                        if (entryBundle) syncReadingContext(entryBundle.entry.id, v);
                       }}
                     >
                       {VERSION_NAMES[v]}
@@ -666,10 +740,19 @@ export function App() {
                 <button
                   type="button"
                   className="vc-btn-ghost vc-btn-icon"
-                  title={passage ? '带选段向 Floatboat 伴读提问' : '带本文向 Floatboat 伴读提问'}
-                  onClick={() => void askFloatboat()}
+                  title={
+                    dispatching
+                      ? '正在把正文发进 Floatboat 对话'
+                      : `${passage ? '把选段' : '把这篇正文'}发进 Floatboat 对话（按住 ⌥ 复制伴读指令）`
+                  }
+                  aria-busy={dispatching}
+                  disabled={dispatching}
+                  onClick={event => {
+                    if (event.altKey) void copyCompanionPrompt();
+                    else void askFloatboat();
+                  }}
                 >
-                  <WandSparkles size={15} />
+                  {dispatching ? <RefreshCw size={14} className="vc-spin" /> : <WandSparkles size={15} />}
                 </button>
                 <button
                   type="button"
@@ -697,8 +780,14 @@ export function App() {
           {passage && (
             <div className="vc-selection-toolbar">
               <span className="vc-selection-quote">已选中：{passage.quote.slice(0, 60)}</span>
-              <button type="button" className="vc-btn-primary" onClick={() => void askFloatboat()}>
-                <WandSparkles size={13} />
+              <button
+                type="button"
+                className="vc-btn-primary"
+                disabled={dispatching}
+                title="把这一段的上下文和你的问题一起发进 Floatboat 对话"
+                onClick={() => void askFloatboat()}
+              >
+                {dispatching ? <RefreshCw size={13} className="vc-spin" /> : <WandSparkles size={13} />}
                 剖析此段
               </button>
             </div>

@@ -14,10 +14,14 @@
 | 三种版本 | 乔木改写、中文翻译、原文。没有的版本标灰，不会自动调用 AI 生成 |
 | 无限滚动 | 文章列表滚到底自动加载下一页 |
 | 个人订阅 | 添加任意 RSS / Atom 地址，在本机读取，不需要乔木账号 |
-| AI 伴读 | 选中一段文字点「剖析此段」，或点工具栏的伴读按钮，复制带文章上下文的提问，粘贴到 Floatboat 对话 |
+| AI 伴读 | 点工具栏的伴读按钮，正在读的正文连同问题直接发进 Floatboat 原生对话；选中一段文字点「剖析此段」则带上选段。按住 ⌥ 点按钮改为复制提问 |
 | 阅读外观 | 字体、字号、行距、版心宽度和 7 种阅读主题，设置保存在本机 |
 
 已读、星标和个人订阅保存在工作台自己的 SQLite 里，不会写回线上。
+
+打开任意文章时，当前版本的正文会登记成「阅读上下文」：一份在 SQLite，一份是 Markdown 快照
+（`~/Library/Application Support/floatboat/workbench/data/<appId>/reading-context.md`）。
+所以在 Floatboat 对话里直接问「总结这篇文章」，AI 读到的就是阅读器里正打开的那篇，不必再复制粘贴。
 
 ## 安装
 
@@ -61,10 +65,10 @@ Read [Qiaomu RSS](https://rss.qiaomu.ai) inside [Floatboat](https://floatboat.ai
 - Rewrite / translation / original versions. Missing versions are greyed out; nothing is generated automatically.
 - Infinite scroll in the article list.
 - Personal RSS / Atom subscriptions, fetched locally without a Qiaomu account.
-- Select a passage and click "剖析此段", or use the toolbar button, to copy a context-rich prompt for Floatboat's chat.
+- The toolbar companion button hands the article you are reading, body text included, straight to a native Floatboat conversation; "剖析此段" does the same for a selected passage. Hold ⌥ to copy the prompt instead.
 - Reading appearance: font, size, line height, measure and seven themes.
 
-Read state, stars and personal subscriptions live in the workbench's own SQLite and are never written back to the server.
+Read state, stars and personal subscriptions live in the workbench's own SQLite and are never written back to the server. Every article you open also becomes the active reading context (SQLite row plus a Markdown snapshot next to `data.sqlite`), so asking "summarize this article" in any Floatboat chat reads exactly what is on screen.
 
 **Install**: requires Floatboat desktop. The workbench runtime (`sdk/`) is provided by Floatboat and is not included here. Create a workbench in a new workspace, copy everything except `sdk/` into its source directory, keep your own `appId` in `manifest.json`, then ask the agent to check and open it.
 

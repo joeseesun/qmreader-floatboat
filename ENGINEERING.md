@@ -6,6 +6,9 @@
 | --- | --- |
 | `src/server/index.ts` | 组装服务入口，注册路由 |
 | `src/server/reader-routes.ts` | 代理 `rss.qiaomu.ai` 公开 API，合并本地已读 / 星标，管理个人订阅 |
+| `src/server/online-api.ts` | 线上只读客户端：一次取齐原文 / 乔木改写 / 中文翻译 |
+| `src/server/reading-context.ts` | 「正在读」上下文：写入 SQLite + Markdown 快照，并把伴读提问投进 Floatboat 对话 |
+| `src/server/companion-text.ts` | 伴读纯函数：版本回退、正文抽取、上下文 Markdown、带正文的提问拼装 |
 | `src/server/pagination.ts` | 分页纯函数：聚合流 offset 切片、分频道游标判定 |
 | `src/server/app-route.ts` | `/api/app` 应用信息 |
 | `src/contracts/app.ts` | 前后端共享类型：`Source`、`Entry`、`EntryBundle` 等 |
@@ -26,7 +29,34 @@
 | GET | `/api/v1/entries/:id` | 正文、改写、翻译并发读取，合成 `bundle` |
 | POST | `/api/v1/entries/:id/state` | 写入已读 / 星标 |
 | POST / DELETE | `/api/v1/subscriptions[/:id]` | 增删个人订阅 |
-| POST | `/api/v1/companion/prefill` | 生成伴读提问文本 |
+| POST | `/api/v1/reading-context` | 登记「正在读」：`{ entryId, version }`，返回正文快照 |
+| GET | `/api/v1/reading-context` | 读当前上下文；`?format=markdown` 直接返回 Markdown 快照 |
+| POST | `/api/v1/companion/prefill` | 只取伴读提问文本（剪贴板兜底） |
+| POST | `/api/v1/companion/dispatch` | 把「正文 + 提问」发进 Floatboat 原生对话 |
+
+## 伴读：当前文章如何进入对话
+
+阅读器每次打开文章、切换版本，前端都会 `POST /api/v1/reading-context`，服务端把该版本正文存两份：
+
+1. `reading_context` 表（唯一一行，`scope='active'`），`body` 为纯文本 / Markdown；
+2. 磁盘快照 `reading-context.md`，与 `data.sqlite` 同目录：
+   `~/Library/Application Support/floatboat/workbench/data/<appId>/reading-context.md`。
+
+于是任何 Floatboat 对话（包括用户只说「总结这篇文章」）都能这样拿到当前正文：
+
+```bash
+curl -s "http://127.0.0.1:<port>/api/v1/reading-context" | jq -r .context.body   # 服务在跑
+head -40 "~/Library/Application Support/floatboat/workbench/data/<appId>/reading-context.md"  # 服务没跑
+```
+
+点击工具栏伴读按钮或「剖析此段」时走 `POST /api/v1/companion/dispatch`：
+
+- 正文**内嵌**进提问文本（上限 `MAX_PROMPT_BODY_CHARS`，超出时提示去读快照文件），对话无需再回查接口；
+- 通过 `ctx.host.agent.conversations` 复用一条标题为 `QMReader 伴读` 的会话，会话 id 存在 `app_state`；
+- 上一轮仍在运行（`AGENT_CONVERSATION_BUSY`）时另开一条会话，标题带文章名；
+- Host 侧不可用时前端自动退回复制剪贴板（`/api/v1/companion/prefill`），按住 ⌥ 点按钮可直接走这条路。
+
+`workingDirectory` 取工程根（自 `import.meta.url` 向上找 `manifest.json`），Agent 因此能读到 `reading-context.md`。
 
 ## 分页
 
@@ -44,6 +74,7 @@ SQLite 迁移已运行后不可修改，只能追加：
 
 - `0003_online_states.sql`：`read_states`、`favorite_states`
 - `0004_user_subscriptions.sql`：`user_subscriptions`
+- `0005_reading_context.sql`：`reading_context`（单行 `scope='active'`，读者此刻看的文章）、`app_state`（伴读会话 id、最近一次投递）
 - `0002_qmreader.sql` 中的 `sources`、`entries`、`entry_rewrites`、`companion_messages` 是早期本地抓取版本的遗留表，当前代码不再读写。
 
 ## 验证

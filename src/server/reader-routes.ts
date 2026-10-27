@@ -1,15 +1,9 @@
 // ABOUTME: 乔木 RSS 线上 API 网关 + 个人 RSS 订阅管理接口 (直接代理 rss.qiaomu.ai，零重量依赖，支持自建 RSS)
 
-import { createHash } from 'node:crypto';
 import type { WorkbenchServer, RouteContext } from '../../sdk/runtime.mjs';
-import type { Source, Entry, EntryBundle, RewriteData, TranslationData } from '../contracts/app.ts';
+import type { Source, Entry, EntryBundle } from '../contracts/app.ts';
 import { aggregatePage, aggregateWindow, parseOffset, sourceHasMore } from './pagination.ts';
-
-const ONLINE_BASE_URL = 'https://rss.qiaomu.ai';
-
-function hashId(input: string): string {
-  return createHash('sha256').update(input).digest('hex').slice(0, 16);
-}
+import { ONLINE_BASE_URL, fetchOnlineBundle, hashId } from './online-api.ts';
 
 /** 把本地已读 / 星标状态合并进线上条目。 */
 function withLocalState(ctx: RouteContext, list: Entry[]): Entry[] {
@@ -210,60 +204,25 @@ export function registerReaderRoutes(app: WorkbenchServer): void {
   // 5. 获取单篇文章详情、线上乔木改写与翻译
   app.route('GET', '/api/v1/entries/:id', async (ctx: RouteContext) => {
     const entryId = ctx.params.id;
-    const encodedId = encodeURIComponent(entryId);
 
     try {
-      const [entryRes, rewriteRes, transRes] = await Promise.allSettled([
-        fetch(`${ONLINE_BASE_URL}/api/entry/${encodedId}`, {
-          headers: { 'User-Agent': 'Floatboat-QMReader-Plugin/1.0' },
-          signal: AbortSignal.timeout(15000),
-        }),
-        fetch(`${ONLINE_BASE_URL}/api/entry/${encodedId}/rewrite`, {
-          headers: { 'User-Agent': 'Floatboat-QMReader-Plugin/1.0' },
-          signal: AbortSignal.timeout(15000),
-        }),
-        fetch(`${ONLINE_BASE_URL}/api/entry/${encodedId}/translation`, {
-          headers: { 'User-Agent': 'Floatboat-QMReader-Plugin/1.0' },
-          signal: AbortSignal.timeout(15000),
-        }),
-      ]);
+      const bundle = await fetchOnlineBundle(entryId);
+      if (!bundle) return { error: 'entry not found' };
 
-      if (entryRes.status !== 'fulfilled' || !entryRes.value.ok) {
-        return { error: 'entry not found' };
-      }
-
-      const entryJson = await entryRes.value.json() as { entry: Entry };
-      const entry = entryJson.entry;
-
-      let rewrite: RewriteData | null = null;
-      if (rewriteRes.status === 'fulfilled' && rewriteRes.value.ok) {
-        try {
-          const rewriteJson = await rewriteRes.value.json() as { rewrite: RewriteData | null };
-          rewrite = rewriteJson.rewrite;
-        } catch { /* ignore */ }
-      }
-
-      let translation: TranslationData | null = null;
-      if (transRes.status === 'fulfilled' && transRes.value.ok) {
-        try {
-          const transJson = await transRes.value.json() as { translation: TranslationData | null };
-          translation = transJson.translation;
-        } catch { /* ignore */ }
-      }
-
+      const entry = bundle.entry;
       const isReadRow = ctx.database.prepare('SELECT 1 FROM read_states WHERE entry_id = ?').get(entryId);
       const isFavRow = ctx.database.prepare('SELECT 1 FROM favorite_states WHERE entry_id = ?').get(entryId);
 
       entry.isRead = Boolean(isReadRow);
       entry.isFavorite = Boolean(isFavRow);
 
-      const bundle: EntryBundle = {
+      const payload: EntryBundle = {
         entry,
-        rewrite: rewrite || entry.rewrite || null,
-        translation: translation || null,
+        rewrite: bundle.rewrite || entry.rewrite || null,
+        translation: bundle.translation || null,
       };
 
-      return { bundle };
+      return { bundle: payload };
     } catch (err) {
       console.error('[QMReader] Fetch entry bundle failed:', err);
       return { error: 'failed to load entry' };
@@ -300,22 +259,5 @@ export function registerReaderRoutes(app: WorkbenchServer): void {
     }
 
     return { ok: true };
-  });
-
-  // 7. Floatboat 伴读指令生成
-  app.route('POST', '/api/v1/companion/prefill', (ctx: RouteContext) => {
-    const body = (ctx.body || {}) as { title?: string; version?: string; selection?: string; prompt?: string };
-    const nl = String.fromCharCode(10);
-    const title = body.title || '当前阅读文章';
-    const versionLabel = body.version === 'rewrite' ? '乔木改写' : body.version === 'translation' ? '中文翻译' : '原文';
-    
-    let draftText = '';
-    if (body.selection && body.selection.trim()) {
-      draftText = `关于《${title}》（${versionLabel}）的选段：${nl}> ${body.selection.trim()}${nl}${nl}${body.prompt || '请深入剖析这段内容：'}`;
-    } else {
-      draftText = `关于《${title}》（${versionLabel}）：${nl}${body.prompt || '请帮我概括这篇文章的核心论点与深度洞见。'}`;
-    }
-
-    return { ok: true, prefilledText: draftText };
   });
 }
